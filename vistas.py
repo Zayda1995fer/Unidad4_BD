@@ -13,12 +13,12 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 
 from config import PALETA, MIN_REGISTROS, MIN_VARIABLES_NUMERICAS
-from styles import card_abierta, card_cerrada, estilizar_tabla, tema_plotly
+from styles import card_abierta, card_cerrada, estilizar_tabla, tema_plotly, mensaje_error, icono
 from etiquetas import (
     detectar_columnas_musica, detectar_columnas_genero, detectar_columna_edad, eliminar_marca_temporal,
 )
 from estadistica import media, resumen_estadistico
-from modelo import formatear_fecha, guardar_modelo, metodo_codo, nombrar_clusters
+from modelo import formatear_fecha, guardar_modelo, metodo_codo, nombrar_clusters, listar_modelos_guardados
 
 
 def exportar_resultados(df, etiqueta, nombre_archivo):
@@ -29,7 +29,7 @@ def exportar_resultados(df, etiqueta, nombre_archivo):
 # 1. Carga y 2. visualización de datos
 # ==================================================================
 def cargar_datos():
-    card_abierta("📂 Carga de datos", "Sube el CSV exportado de tu encuesta de personalidad y hábitos musicales.")
+    card_abierta("folder_open", "Carga de datos", "Sube el CSV exportado de tu encuesta de personalidad y hábitos musicales.")
     archivo = st.file_uploader("Selecciona el archivo CSV", type=["csv"])
     if archivo is not None:
         try:
@@ -37,7 +37,7 @@ def cargar_datos():
             st.session_state.df_original = df
         except Exception as e:
             st.session_state.df_original = None
-            st.markdown(f'<div class="error-box">❌ No se pudo leer el archivo: {e}</div>', unsafe_allow_html=True)
+            mensaje_error(f"No se pudo leer el archivo: {e}")
     card_cerrada()
     return st.session_state.df_original
 
@@ -56,19 +56,13 @@ def validar_dataset(df):
             errores.append(f"Columnas duplicadas: {df.columns[df.columns.duplicated()].tolist()}.")
     if errores:
         lista = "".join(f"<li>{e}</li>" for e in errores)
-        st.markdown(f'<div class="error-box">❌ <strong>Estructura inválida:</strong><ul>{lista}</ul></div>', unsafe_allow_html=True)
+        mensaje_error(f"<strong>Estructura inválida:</strong><ul>{lista}</ul>")
         return False
     return True
 
 
 def mostrar_dataset(df):
-    card_abierta("🗂️ Información general del dataset", "Resumen del archivo cargado antes de filtrar o entrenar.")
-    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Encuestados", df.shape[0])
-    c2.metric("Preguntas", df.shape[1])
-    c3.metric("Características numéricas", len(num_cols))
-    c4.metric("Valores faltantes", int(df.isna().sum().sum()))
+    card_abierta("table_view", "Información general del dataset", "Resumen del archivo cargado antes de filtrar o entrenar.")
     st.dataframe(estilizar_tabla(df), use_container_width=True, height=280)
     card_cerrada()
 
@@ -77,10 +71,11 @@ def mostrar_dataset(df):
 # 3. Filtro de datos
 # ==================================================================
 def filtrar_datos(df):
-    card_abierta("🔍 Filtrar datos", "Acota la muestra por categoría o rango antes de analizar o entrenar.")
+    card_abierta("filter_alt", "Filtrar datos", "Acota la muestra por categoría o rango antes de analizar o entrenar.")
     cat_cols = [c for c in df.columns if df[c].dtype == object]
     num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
     df_f = df.copy()
+    filtros_activos = []
 
     if cat_cols:
         cols = st.columns(min(3, len(cat_cols)))
@@ -89,64 +84,54 @@ def filtrar_datos(df):
                 valores = sorted(df[col].dropna().unique().tolist(), key=str)
                 sel = st.multiselect(f"Filtrar por {col}", valores, default=valores)
                 df_f = df_f[df_f[col].isin(sel)]
+                if len(sel) < len(valores):
+                    filtros_activos.append(f"{col}: {', '.join(map(str, sel)) or 'ninguno'}")
     else:
         st.caption("No hay columnas categóricas para filtrar.")
 
     if num_cols:
-        with st.expander("🔧 Filtros por rango numérico (edad, puntuaciones, etc.)"):
+        with st.expander("Filtros por rango numérico (edad, puntuaciones, etc.)"):
             for col in num_cols:
                 lo, hi = float(df[col].min()), float(df[col].max())
                 if lo == hi:
                     continue
                 r = st.slider(col, lo, hi, (lo, hi))
                 df_f = df_f[(df_f[col] >= r[0]) & (df_f[col] <= r[1])]
+                if r[0] > lo or r[1] < hi:
+                    filtros_activos.append(f"{col}: {r[0]:.0f}–{r[1]:.0f}")
 
-    st.markdown(f'<p style="color:#6D5EF0;font-weight:600;">Registros tras el filtro: {df_f.shape[0]} de {df.shape[0]}</p>', unsafe_allow_html=True)
+    filtros_resumen = " · ".join(filtros_activos) if filtros_activos else "Sin filtros aplicados (dataset completo)"
+    st.session_state.filtros_resumen = filtros_resumen
+
+    st.markdown(f'<p style="color:#6D28D9;font-weight:700;">Registros tras el filtro: {df_f.shape[0]} de {df.shape[0]}</p>', unsafe_allow_html=True)
     st.dataframe(estilizar_tabla(df_f), use_container_width=True, height=260)
-    exportar_resultados(df_f, "⬇️ Descargar datos filtrados (CSV)", "datos_filtrados.csv")
+    exportar_resultados(df_f, "Descargar datos filtrados (CSV)", "datos_filtrados.csv")
     card_cerrada()
     return df_f
 
 
 # ==================================================================
-# 4. Estadística descriptiva básica
+# 4. Estadística descriptiva básica (solo variables numéricas)
 # ==================================================================
 def mostrar_estadisticas(df, num_cols, etiquetas):
-    card_abierta("📊 Estadística descriptiva básica", "Media, mediana, moda, desviación y rango — calculados con funciones propias.")
-    cat_cols = [c for c in df.columns if df[c].dtype == object]
-    tab_num, tab_cat = st.tabs(["📈 Numéricas", "🗂️ Categóricas"])
-
-    with tab_num:
-        if num_cols:
-            tabla = resumen_estadistico(df, num_cols, etiquetas)
-            st.dataframe(estilizar_tabla(tabla), use_container_width=True)
-            st.caption(
-                "**n**: respuestas válidas · **media**: promedio · **mediana**: valor central al ordenar los datos · "
-                "**moda**: valor más repetido · **desv. estándar**: qué tan dispersas están las respuestas respecto "
-                "a la media (más alto = más variedad de opiniones) · **rango**: diferencia entre el máximo y el mínimo."
-            )
-            fig = go.Figure([
-                go.Bar(x=tabla["característica"], y=tabla["media"], name="Media", marker_color=PALETA[0]),
-                go.Bar(x=tabla["característica"], y=tabla["desv_estandar"], name="Desv. estándar", marker_color=PALETA[1]),
-            ])
-            fig.update_layout(barmode="group", title="Media y dispersión por característica")
-            fig.update_xaxes(tickangle=-35)
-            st.plotly_chart(tema_plotly(fig, 380), use_container_width=True)
-        else:
-            st.caption("No hay columnas numéricas.")
-
-    with tab_cat:
-        if cat_cols:
-            for col in cat_cols:
-                conteo = df[col].value_counts().reset_index()
-                conteo.columns = [col, "conteo"]
-                fig = px.bar(conteo, x=col, y="conteo", text="conteo", color=col,
-                             color_discrete_sequence=PALETA, title=f"Frecuencia — {col}")
-                fig.update_traces(textposition="outside")
-                fig.update_layout(showlegend=False)
-                st.plotly_chart(tema_plotly(fig, 320), use_container_width=True)
-        else:
-            st.caption("No hay columnas categóricas.")
+    card_abierta("bar_chart", "Estadística descriptiva básica", "Media, mediana, moda, desviación y rango — calculados con funciones propias.")
+    if num_cols:
+        tabla = resumen_estadistico(df, num_cols, etiquetas)
+        st.dataframe(estilizar_tabla(tabla), use_container_width=True)
+        st.caption(
+            "**n**: respuestas válidas · **media**: promedio · **mediana**: valor central al ordenar los datos · "
+            "**moda**: valor más repetido · **desv. estándar**: qué tan dispersas están las respuestas respecto "
+            "a la media (más alto = más variedad de opiniones) · **rango**: diferencia entre el máximo y el mínimo."
+        )
+        fig = go.Figure([
+            go.Bar(x=tabla["característica"], y=tabla["media"], name="Media", marker_color=PALETA[0]),
+            go.Bar(x=tabla["característica"], y=tabla["desv_estandar"], name="Desv. estándar", marker_color=PALETA[1]),
+        ])
+        fig.update_layout(barmode="group", title="Media y dispersión por característica")
+        fig.update_xaxes(tickangle=-35)
+        st.plotly_chart(tema_plotly(fig, 380), use_container_width=True)
+    else:
+        st.caption("No hay columnas numéricas.")
     card_cerrada()
 
 
@@ -154,7 +139,7 @@ def mostrar_estadisticas(df, num_cols, etiquetas):
 # 5. Entrenamiento K-Means (con método del codo) y guardado
 # ==================================================================
 def entrenar_kmeans(df, num_cols):
-    card_abierta("🤖 Entrenamiento del modelo (K-Means)", "Elige las características, revisa el codo y entrena el modelo final.")
+    card_abierta("model_training", "Entrenamiento del modelo (K-Means)", "Elige las características, revisa el codo y entrena el modelo final.")
     variables = st.multiselect("Características a incluir", num_cols, default=num_cols)
     normalizar_datos = st.checkbox("Normalizar variables (recomendado)", value=True)
 
@@ -173,21 +158,27 @@ def entrenar_kmeans(df, num_cols):
     st.markdown("**Paso 2 · Número final de clusters**")
     k = st.slider("k final", 2, 10, 4)
 
-    if st.button("🚀 Entrenar modelo K-Means"):
+    if st.button("Entrenar modelo K-Means"):
         modelo = KMeans(n_clusters=k, random_state=42, n_init=10)
         labels = modelo.fit_predict(Xp)
         df_res = df.loc[idx].copy()
         df_res["cluster"] = labels
 
         st.session_state.update(modelo=modelo, scaler=scaler, df_resultados=df_res, variables_modelo=variables)
-        guardar_modelo(modelo, scaler, variables)
+
+        try:
+            silhouette = silhouette_score(Xp, labels)
+        except Exception:
+            silhouette = None
+
+        filtros_resumen = st.session_state.get("filtros_resumen", "Sin filtros aplicados (dataset completo)")
+        guardar_modelo(modelo, scaler, variables, filtros_resumen=filtros_resumen,
+                        n_registros=X.shape[0], k=k, silhouette=silhouette)
 
         m1, m2 = st.columns(2)
         m1.metric("Clusters entrenados", k)
-        try:
-            m2.metric("Silhouette Score", f"{silhouette_score(Xp, labels):.3f}")
-        except Exception:
-            pass
+        if silhouette is not None:
+            m2.metric("Silhouette Score", f"{silhouette:.3f}")
         st.caption("El Silhouette Score va de -1 a 1; más cerca de 1 significa grupos mejor separados.")
     card_cerrada()
 
@@ -200,8 +191,8 @@ def cargar_modelo_previo():
     aunque todavía no se haya cargado ningún dataset. Los resultados
     se generan aparte (ver generar_resultados_si_posible), en cuanto
     haya un dataset compatible disponible."""
-    with st.expander("📦 Cargar un modelo ya entrenado (.pkl)"):
-        st.caption("Puedes cargar un modelo aquí aunque todavía no hayas subido un dataset en la pestaña Datos.")
+    with st.expander("Cargar un modelo ya entrenado (.pkl)"):
+        st.caption("Puedes cargar un modelo aquí aunque todavía no hayas subido un dataset en la sección Datos.")
         archivo = st.file_uploader("Sube el archivo .pkl", type=["pkl"], key="modelo_upload")
         if archivo is not None:
             try:
@@ -209,17 +200,46 @@ def cargar_modelo_previo():
                 modelo = contenido.get("modelo")
                 scaler = contenido.get("scaler")
                 variables = contenido.get("variables")
-                st.write("Algoritmo:", contenido.get("algoritmo"))
-                st.write("Características:", variables)
-                st.write("Fecha y hora de creación:", formatear_fecha(contenido.get("fecha_entrenamiento")))
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.write("**Algoritmo:**", contenido.get("algoritmo", "N/D"))
+                    st.write("**Fecha y hora de creación:**", formatear_fecha(contenido.get("fecha_entrenamiento")))
+                    st.write("**k (clusters):**", contenido.get("k", "N/D"))
+                with c2:
+                    st.write("**Registros usados al entrenar:**", contenido.get("n_registros", "N/D"))
+                    sil = contenido.get("silhouette_score")
+                    st.write("**Silhouette Score:**", f"{sil:.3f}" if isinstance(sil, (int, float)) else "N/D")
+                    st.write("**Filtros activos al entrenar:**", contenido.get("filtros_aplicados", "N/D (modelo guardado con una versión anterior)"))
+                st.write("**Características:**", variables)
 
                 es_modelo_nuevo = st.session_state.get("variables_modelo") != variables
                 st.session_state.update(modelo=modelo, scaler=scaler, variables_modelo=variables)
                 if es_modelo_nuevo:
                     st.session_state.df_resultados = None  # evita mezclar resultados de un modelo distinto
-                st.success("✅ Modelo cargado en memoria. Sube o usa un dataset compatible para ver resultados.")
+                st.success("Modelo cargado en memoria. Sube o usa un dataset compatible para ver resultados.")
             except Exception as e:
-                st.markdown(f'<div class="error-box">❌ No se pudo cargar el modelo: {e}</div>', unsafe_allow_html=True)
+                mensaje_error(f"No se pudo cargar el modelo: {e}")
+
+
+def mostrar_historial_modelos():
+    """Muestra todos los modelos .pkl guardados en disco hasta ahora,
+    con su fecha, filtros usados, k, registros y Silhouette Score —
+    y la ruta exacta (absoluta) de cada archivo dentro del proyecto."""
+    card_abierta("history", "Historial de modelos guardados", "Cada vez que entrenas, se crea un archivo .pkl nuevo — nada se sobrescribe.")
+    tabla, ruta_carpeta = listar_modelos_guardados()
+    st.markdown(
+        f'<p>{icono("folder", 18)} Carpeta donde se guardan los modelos:<br>'
+        f'<span class="ruta" style="font-family:\'Courier New\',monospace;background:#EDE9FE;padding:.15rem .5rem;border-radius:6px;">{ruta_carpeta}</span></p>',
+        unsafe_allow_html=True,
+    )
+    if tabla.empty:
+        st.info("Todavía no has entrenado ningún modelo en esta sesión. Ve a la sección **Entrenamiento** para crear el primero.")
+    else:
+        st.dataframe(tabla.drop(columns=["Ruta completa"]), use_container_width=True, height=min(60 + 38 * len(tabla), 320))
+        with st.expander("Ver rutas completas de cada archivo"):
+            for _, fila in tabla.iterrows():
+                st.markdown(f'<div class="ficha-modelo"><strong>{fila["Archivo"]}</strong><br><span class="ruta">{fila["Ruta completa"]}</span></div>', unsafe_allow_html=True)
+    card_cerrada()
 
 
 def generar_resultados_si_posible(df):
@@ -240,17 +260,17 @@ def generar_resultados_si_posible(df):
     df_res = df.loc[X.index].copy()
     df_res["cluster"] = modelo.predict(Xp)
     st.session_state.df_resultados = df_res
-    st.success("✅ Resultados generados automáticamente con el modelo cargado.")
+    st.success("Resultados generados automáticamente con el modelo cargado.")
 
 
 # ==================================================================
 # 6. Resultados del modelo
 # ==================================================================
 def mostrar_resultados(etiquetas):
-    card_abierta("📈 Resultados del modelo", "Perfiles encontrados, distribución, proyección PCA y promedios.")
+    card_abierta("insights", "Resultados del modelo", "Perfiles encontrados, distribución, proyección PCA y promedios.")
     df_res = st.session_state.df_resultados
     if df_res is None:
-        st.info("Entrena un modelo en la pestaña de Entrenamiento, o carga uno ya entrenado arriba junto con un dataset compatible, para ver resultados aquí.")
+        st.info("Entrena un modelo en la sección de Entrenamiento, o carga uno ya entrenado arriba junto con un dataset compatible, para ver resultados aquí.")
         card_cerrada(); return
 
     variables = st.session_state.variables_modelo
@@ -261,7 +281,7 @@ def mostrar_resultados(etiquetas):
     st.session_state.nombres_cluster = nombres
 
     st.markdown("**Perfiles encontrados**")
-    st.markdown("".join(f'<span class="cluster-chip">🎧 {n}</span>' for n in nombres.values()), unsafe_allow_html=True)
+    st.markdown("".join(f'<span class="cluster-chip">{icono("headphones", 15)}{n}</span>' for n in nombres.values()), unsafe_allow_html=True)
 
     df_mostrar = df_res.rename(columns=etiquetas).copy()
     df_mostrar["perfil"] = df_res["cluster"].map(nombres)
@@ -315,12 +335,12 @@ def mostrar_resultados(etiquetas):
             filas_g.append({"Perfil": nombres[c], "Género recomendado": max(prom, key=prom.get) if prom else "N/D"})
         st.dataframe(pd.DataFrame(filas_g), use_container_width=True)
 
-    with st.expander("📊 Resumen estadístico detallado por perfil"):
+    with st.expander("Resumen estadístico detallado por perfil"):
         for c in sorted(df_res["cluster"].unique()):
             st.markdown(f"**{nombres[c]}**")
             st.dataframe(estilizar_tabla(resumen_estadistico(df_res[df_res["cluster"] == c], num_cols, etiquetas)), use_container_width=True)
 
-    exportar_resultados(df_mostrar, "⬇️ Descargar resultados (CSV con perfil asignado)", "resultados_clusters.csv")
+    exportar_resultados(df_mostrar, "Descargar resultados (CSV con perfil asignado)", "resultados_clusters.csv")
     card_cerrada()
 
 
@@ -334,7 +354,7 @@ def cuestionario_recomendacion(df, etiquetas):
     al enviar, solo se muestra el número de cluster crudo (el nombre
     del perfil y la recomendación de género necesitan un dataset para
     calcularse)."""
-    card_abierta("🎯 Cuestionario: descubre tu tipo de música", "Responde y el modelo entrenado te ubicará en un perfil.")
+    card_abierta("recommend", "Cuestionario: descubre tu tipo de música", "Responde y el modelo entrenado te ubicará en un perfil.")
     if st.session_state.modelo is None or not st.session_state.variables_modelo:
         st.info("Entrena o carga primero un modelo K-Means para habilitar este cuestionario.")
         card_cerrada(); return
@@ -382,7 +402,7 @@ def cuestionario_recomendacion(df, etiquetas):
                     opts, format_func=lambda v: opciones.get(v, str(v)),
                     horizontal=True, key=f"quiz_{p}",
                 )
-        enviado = st.form_submit_button("🔮 Descubrir mi tipo de música")
+        enviado = st.form_submit_button("Descubrir mi tipo de música")
 
     if enviado:
         vector = []
@@ -400,9 +420,9 @@ def cuestionario_recomendacion(df, etiquetas):
         nombre_perfil = nombres.get(cluster)
 
         if nombre_perfil:
-            st.markdown(f'<p style="color:#6D5EF0;font-weight:700;font-size:1.05rem;">Tu perfil: {nombre_perfil}</p>', unsafe_allow_html=True)
+            st.markdown(f'<p style="color:#6D28D9;font-weight:700;font-size:1.05rem;">Tu perfil: {nombre_perfil}</p>', unsafe_allow_html=True)
         else:
-            st.markdown(f'<p style="color:#6D5EF0;font-weight:700;font-size:1.05rem;">Tu cluster: {cluster}</p>', unsafe_allow_html=True)
+            st.markdown(f'<p style="color:#6D28D9;font-weight:700;font-size:1.05rem;">Tu cluster: {cluster}</p>', unsafe_allow_html=True)
             st.caption("Sube un dataset compatible en la pestaña Datos para ver el nombre del perfil y la recomendación de género musical.")
 
         generos = detectar_columnas_genero(df.columns) if df is not None else {}
@@ -411,7 +431,7 @@ def cuestionario_recomendacion(df, etiquetas):
             prom = {g: media(subset[col].dropna().tolist()) for g, col in generos.items() if col in subset and not subset[col].dropna().empty}
             if prom:
                 top = max(prom, key=prom.get)
-                st.success(f"🎧 Tu tipo de música recomendado es: **{top}**")
+                st.success(f"Tu tipo de música recomendado es: **{top}**")
                 df_g = pd.DataFrame({"género": list(prom.keys()), "afinidad_promedio": [round(v, 2) for v in prom.values()]}).sort_values("afinidad_promedio", ascending=False)
                 fig = px.bar(df_g, x="género", y="afinidad_promedio", text="afinidad_promedio", color="género",
                              color_discrete_sequence=PALETA, title="Afinidad musical de tu perfil")

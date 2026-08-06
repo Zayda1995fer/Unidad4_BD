@@ -1,1 +1,5 @@
-_pycache_
+__pycache__/
+*.pyc
+modelos_guardados/
+*.pkl
+.streamlit/secrets.toml
