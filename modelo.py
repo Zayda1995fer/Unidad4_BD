@@ -29,7 +29,7 @@ def metodo_codo(X, k_max=10):
     inercias = [KMeans(n_clusters=k, random_state=42, n_init=10).fit(X).inertia_ for k in range(1, k_max + 1)]
     fig = go.Figure(go.Scatter(x=list(range(1, k_max + 1)), y=inercias, mode="lines+markers",
                                 line=dict(color=PALETA[0], width=3), marker=dict(size=9, color=PALETA[1]),
-                                fill="tozeroy", fillcolor="rgba(124,58,237,0.10)"))
+                                fill="tozeroy", fillcolor="rgba(179,144,122,0.14)"))
     fig.update_layout(title="Método del Codo — Inercia vs. k", xaxis_title="k", yaxis_title="Inercia (WCSS)")
     st.plotly_chart(tema_plotly(fig, 360), use_container_width=True)
     st.caption("Elige k en el punto donde la curva deja de bajar bruscamente (el 'codo').")

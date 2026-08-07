@@ -3,6 +3,8 @@ columnas especiales (marca temporal, música, género, edad)."""
 
 import unicodedata
 
+import pandas as pd
+
 # Las preguntas de la encuesta son largas ("2. Disfruto iniciar
 # conversaciones con personas que acabo de conocer."). Este mapa
 # genera una etiqueta corta y descriptiva por cada columna.
@@ -78,6 +80,54 @@ def detectar_columnas_genero(columnas):
 
 def detectar_columna_edad(columnas):
     return next((c for c in columnas if "edad" in normalizar(c) or "age" in normalizar(c)), None)
+
+
+def derivar_filtros_categoricos(df):
+    """A partir de las respuestas numéricas ya existentes, arma categorías
+    de filtro más naturales para la persona que usa la app (en vez de
+    filtrar columna por columna). Devuelve un diccionario
+    {nombre_filtro: pd.Series} — cada Serie tiene el mismo índice que df.
+    Solo se derivan categorías que SÍ se pueden calcular con las preguntas
+    actuales de la encuesta; otras categorías típicas (estado de ánimo,
+    plataforma, instrumento favorito) requerirían agregar esas preguntas
+    al formulario, así que no se inventan aquí."""
+    columnas = df.columns.tolist()
+    filtros = {}
+
+    # --- Tipo de personalidad: a partir de Extraversión + Sociabilidad ---
+    col_extra = next((c for c in columnas if "conversaciones" in normalizar(c)), None)
+    col_socia = next((c for c in columnas if "centro de atencion" in normalizar(c)), None)
+    cols_extraversion = [c for c in (col_extra, col_socia) if c]
+    if cols_extraversion:
+        promedio = df[cols_extraversion].mean(axis=1)
+        filtros["Tipo de personalidad"] = pd.cut(
+            promedio, bins=[0, 2.5, 3.5, 5.01],
+            labels=["Introvertido", "Ambivertido", "Extrovertido"], include_lowest=True,
+        ).astype(str)
+
+    # --- Rango de edad ---
+    col_edad = detectar_columna_edad(columnas)
+    if col_edad:
+        filtros["Rango de edad"] = pd.cut(
+            df[col_edad], bins=[0, 20, 25, 30, 200],
+            labels=["15-20", "21-25", "26-30", "31+"], include_lowest=True,
+        ).astype(str)
+
+    # --- Frecuencia de escucha: a partir de "Escucho música todos los días" ---
+    col_frecuencia = next((c for c in columnas if "todos los dias" in normalizar(c)), None)
+    if col_frecuencia:
+        filtros["Frecuencia de escucha"] = pd.cut(
+            df[col_frecuencia], bins=[0, 2, 3.5, 5.01],
+            labels=["Ocasional", "Semanal", "Diario"], include_lowest=True,
+        ).astype(str)
+
+    # --- Género musical favorito: el de mayor puntuación por persona ---
+    generos = detectar_columnas_genero(columnas)
+    if generos:
+        sub = df[list(generos.values())].rename(columns={v: k for k, v in generos.items()})
+        filtros["Género musical favorito"] = sub.idxmax(axis=1)
+
+    return filtros
 
 
 def eliminar_marca_temporal(df):

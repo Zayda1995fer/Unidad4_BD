@@ -15,7 +15,8 @@ from sklearn.metrics import silhouette_score
 from config import PALETA, MIN_REGISTROS, MIN_VARIABLES_NUMERICAS
 from styles import card_abierta, card_cerrada, estilizar_tabla, tema_plotly, mensaje_error, icono
 from etiquetas import (
-    detectar_columnas_musica, detectar_columnas_genero, detectar_columna_edad, eliminar_marca_temporal,
+    detectar_columnas_musica, detectar_columnas_genero, detectar_columna_edad,
+    eliminar_marca_temporal, derivar_filtros_categoricos,
 )
 from estadistica import media, resumen_estadistico
 from modelo import formatear_fecha, guardar_modelo, metodo_codo, nombrar_clusters, listar_modelos_guardados
@@ -71,26 +72,35 @@ def mostrar_dataset(df):
 # 3. Filtro de datos
 # ==================================================================
 def filtrar_datos(df):
-    card_abierta("filter_alt", "Filtrar datos", "Acota la muestra por categoría o rango antes de analizar o entrenar.")
-    cat_cols = [c for c in df.columns if df[c].dtype == object]
-    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    card_abierta(
+        "filter_alt", "Filtrar datos",
+        "Filtra por categorías naturales (tipo de personalidad, edad, hábitos musicales) en vez de pregunta por pregunta.",
+    )
     df_f = df.copy()
     filtros_activos = []
 
-    if cat_cols:
-        cols = st.columns(min(3, len(cat_cols)))
-        for i, col in enumerate(cat_cols):
+    categorias = derivar_filtros_categoricos(df)
+    if categorias:
+        cols = st.columns(min(2, len(categorias)) or 1)
+        for i, (nombre, serie) in enumerate(categorias.items()):
             with cols[i % len(cols)]:
-                valores = sorted(df[col].dropna().unique().tolist(), key=str)
-                sel = st.multiselect(f"Filtrar por {col}", valores, default=valores)
-                df_f = df_f[df_f[col].isin(sel)]
+                valores = sorted([v for v in serie.dropna().unique().tolist() if v != "nan"])
+                sel = st.multiselect(nombre, valores, default=valores)
+                df_f = df_f[serie.isin(sel).reindex(df_f.index, fill_value=False)]
                 if len(sel) < len(valores):
-                    filtros_activos.append(f"{col}: {', '.join(map(str, sel)) or 'ninguno'}")
+                    filtros_activos.append(f"{nombre}: {', '.join(map(str, sel)) or 'ninguno'}")
+        st.caption(
+            "Estas categorías se calculan a partir de tus respuestas numéricas reales "
+            "(por ejemplo, \"Tipo de personalidad\" combina tus respuestas de extraversión y sociabilidad). "
+            "Categorías como estado de ánimo, plataforma o instrumento favorito necesitarían agregar esas "
+            "preguntas al formulario — no se derivan de la encuesta actual."
+        )
     else:
-        st.caption("No hay columnas categóricas para filtrar.")
+        st.caption("No se pudieron derivar categorías de filtro con las columnas de este dataset.")
 
+    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
     if num_cols:
-        with st.expander("Filtros por rango numérico (edad, puntuaciones, etc.)"):
+        with st.expander("Filtros adicionales por rango numérico (pregunta por pregunta)"):
             for col in num_cols:
                 lo, hi = float(df[col].min()), float(df[col].max())
                 if lo == hi:
@@ -103,7 +113,7 @@ def filtrar_datos(df):
     filtros_resumen = " · ".join(filtros_activos) if filtros_activos else "Sin filtros aplicados (dataset completo)"
     st.session_state.filtros_resumen = filtros_resumen
 
-    st.markdown(f'<p style="color:#6D28D9;font-weight:700;">Registros tras el filtro: {df_f.shape[0]} de {df.shape[0]}</p>', unsafe_allow_html=True)
+    st.markdown(f'<p style="color:#B3907A;font-weight:700;">Registros tras el filtro: {df_f.shape[0]} de {df.shape[0]}</p>', unsafe_allow_html=True)
     st.dataframe(estilizar_tabla(df_f), use_container_width=True, height=260)
     exportar_resultados(df_f, "Descargar datos filtrados (CSV)", "datos_filtrados.csv")
     card_cerrada()
@@ -138,13 +148,32 @@ def mostrar_estadisticas(df, num_cols, etiquetas):
 # ==================================================================
 # 5. Entrenamiento K-Means (con método del codo) y guardado
 # ==================================================================
-def entrenar_kmeans(df, num_cols):
-    card_abierta("model_training", "Entrenamiento del modelo (K-Means)", "Elige las características, revisa el codo y entrena el modelo final.")
-    variables = st.multiselect("Características a incluir", num_cols, default=num_cols)
+def entrenar_kmeans(df, num_cols, etiquetas):
+    card_abierta("model_training", "Entrenamiento del modelo (K-Means)", "Activa o desactiva cada pregunta, revisa el codo y entrena el modelo final.")
+
+    st.markdown("**Preguntas a incluir en el entrenamiento**")
+    col_a, col_b, col_c = st.columns([1, 1, 2])
+    with col_a:
+        if st.button("Activar todas", key="activar_todas"):
+            for col in num_cols:
+                st.session_state[f"var_{col}"] = True
+    with col_b:
+        if st.button("Desactivar todas", key="desactivar_todas"):
+            for col in num_cols:
+                st.session_state[f"var_{col}"] = False
+
+    cols_grid = st.columns(2)
+    for i, col in enumerate(num_cols):
+        etiqueta_corta = etiquetas.get(col, col)
+        texto_completo = col.split(".", 1)[-1].strip() if "." in col[:4] else col
+        with cols_grid[i % 2]:
+            st.checkbox(f"**{etiqueta_corta}** — {texto_completo}", value=True, key=f"var_{col}")
+    variables = [col for col in num_cols if st.session_state.get(f"var_{col}", True)]
+
     normalizar_datos = st.checkbox("Normalizar variables (recomendado)", value=True)
 
     if len(variables) < 2:
-        st.warning("Selecciona al menos 2 características numéricas."); card_cerrada(); return
+        st.warning("Activa al menos 2 preguntas numéricas."); card_cerrada(); return
     if df.shape[0] < MIN_REGISTROS:
         st.warning(f"Se necesitan al menos {MIN_REGISTROS} registros filtrados."); card_cerrada(); return
 
@@ -420,9 +449,9 @@ def cuestionario_recomendacion(df, etiquetas):
         nombre_perfil = nombres.get(cluster)
 
         if nombre_perfil:
-            st.markdown(f'<p style="color:#6D28D9;font-weight:700;font-size:1.05rem;">Tu perfil: {nombre_perfil}</p>', unsafe_allow_html=True)
+            st.markdown(f'<p style="color:#B3907A;font-weight:700;font-size:1.05rem;">Tu perfil: {nombre_perfil}</p>', unsafe_allow_html=True)
         else:
-            st.markdown(f'<p style="color:#6D28D9;font-weight:700;font-size:1.05rem;">Tu cluster: {cluster}</p>', unsafe_allow_html=True)
+            st.markdown(f'<p style="color:#B3907A;font-weight:700;font-size:1.05rem;">Tu cluster: {cluster}</p>', unsafe_allow_html=True)
             st.caption("Sube un dataset compatible en la pestaña Datos para ver el nombre del perfil y la recomendación de género musical.")
 
         generos = detectar_columnas_genero(df.columns) if df is not None else {}
